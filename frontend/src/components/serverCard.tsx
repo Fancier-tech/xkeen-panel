@@ -46,6 +46,7 @@ export function ServerCard({
     )
 
     const country = server.country_override || server.country
+    const isProfile = server.entry_type === 'profile'
     // Subscription names often already start with a flag emoji — do not add a second one.
     const nameHasFlag = /\p{Regional_Indicator}\p{Regional_Indicator}/u.test(
         server.name,
@@ -89,9 +90,20 @@ export function ServerCard({
                                 ? 'SS'
                                 : server.protocol}
                         </Badge>
-                        <span className='text-muted-foreground'>
-                            {maskAddress(server.address)}:{server.port}
-                        </span>
+                        {isProfile && (
+                            <Badge
+                                variant='outline'
+                                className='text-[10px] border-sky-500/25 bg-sky-500/10 text-sky-400'
+                            >
+                                Балансировка · {server.member_count ?? 0}{' '}
+                                серверов
+                            </Badge>
+                        )}
+                        {!isProfile && (
+                            <span className='text-muted-foreground'>
+                                {maskAddress(server.address)}:{server.port}
+                            </span>
+                        )}
                         {server.latency_ms > 0 && (
                             <span
                                 className={cn(
@@ -109,7 +121,8 @@ export function ServerCard({
                         {server.latency_ms === -1 && (
                             <span className='text-muted-foreground'>—</span>
                         )}
-                        {onSetCountry &&
+                        {!isProfile &&
+                            onSetCountry &&
                             (editing ? (
                                 <span className='flex items-center gap-1'>
                                     <Input
