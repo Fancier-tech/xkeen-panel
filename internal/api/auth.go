@@ -51,44 +51,12 @@ func (h *AuthHandler) HandleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate the TOTP secret
-	secret, qrBase64, err := auth.GenerateTOTP(req.Username)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "ошибка генерации TOTP"})
-		return
-	}
-
-	// Create the pending account
-	if err := h.userManager.CreatePendingUser(req.Username, req.Password, secret); err != nil {
+	// Create and persist the account immediately. TOTP is intentionally disabled
+	// in this fork; password authentication and optional passkeys remain available.
+	if err := h.userManager.CreatePendingUser(req.Username, req.Password, ""); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "ошибка создания пользователя"})
 		return
 	}
-
-	writeJSON(w, http.StatusOK, map[string]string{
-		"totp_secret": secret,
-		"totp_qr":     qrBase64,
-	})
-}
-
-// HandleSetupConfirm — POST /api/auth/setup/confirm
-func (h *AuthHandler) HandleSetupConfirm(w http.ResponseWriter, r *http.Request) {
-	if !h.userManager.HasPendingSetup() {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "setup не начат"})
-		return
-	}
-
-	var req models.SetupConfirmRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "неверный формат запроса"})
-		return
-	}
-
-	secret := h.userManager.GetPendingTOTPSecret()
-	if !auth.ValidateTOTP(req.Code, secret) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "неверный TOTP-код"})
-		return
-	}
-
 	if err := h.userManager.ConfirmSetup(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "ошибка сохранения пользователя"})
 		return
@@ -102,6 +70,12 @@ func (h *AuthHandler) HandleSetupConfirm(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"token": token})
+}
+
+// HandleSetupConfirm is kept for API compatibility with upstream clients.
+// New setups are completed directly by HandleSetup and do not require TOTP.
+func (h *AuthHandler) HandleSetupConfirm(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusBadRequest, map[string]string{"error": "TOTP отключен в этой сборке"})
 }
 
 // HandleLogin — POST /api/auth/login
@@ -120,11 +94,6 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user := h.userManager.GetUser()
-	if !auth.ValidateTOTP(req.TOTPCode, user.TOTPSecret) {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "неверный TOTP-код"})
-		return
-	}
-
 	token, err := auth.GenerateToken(user.Username, user.JWTSecret)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "ошибка генерации токена"})
