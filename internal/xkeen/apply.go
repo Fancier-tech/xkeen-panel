@@ -8,14 +8,21 @@ import (
 	"xkeen-panel/internal/models"
 )
 
-// ApplyServer writes the server into the core config and validates the result
-// before anyone restarts on top of it.
-//
-// Without the check a bad outbound leaves XKeen unable to start, and the panel
-// would report success: `xkeen -restart` returns long before the core fails.
-// Validation runs the core's own parser (`xray -test` / `mihomo -t`), so a
-// failure means the config really is broken — the previous one is restored.
+// ApplyServer writes the selected entry into the core config and validates the
+// result before anyone restarts on top of it. An entry may be one ordinary
+// server or a provider-owned Xray balancer profile.
 func ApplyServer(rt Runtime, outboundsPath string, server *models.Server) error {
+	if IsXrayProfile(server) {
+		return ApplyXrayProfile(rt, outboundsPath, server)
+	}
+
+	// A provider profile leaves several outbounds and a balancer behind. When the
+	// user selects a normal VLESS again, collapse that layout deliberately rather
+	// than letting UpdateOutbound reject/partially rewrite the pool.
+	if providerProfileActive(outboundsPath) {
+		return ApplySingleFromProviderProfile(rt, outboundsPath, server)
+	}
+
 	if err := ensureOutboundsContainer(outboundsPath); err != nil {
 		return err
 	}
