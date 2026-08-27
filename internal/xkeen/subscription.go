@@ -30,6 +30,10 @@ func (sm *SubscriptionManager) filePath() string {
 	return filepath.Join(sm.dataDir, "subscription.json")
 }
 
+func (sm *SubscriptionManager) hwidPath() string {
+	return filepath.Join(filepath.Dir(sm.dataDir), "hwid")
+}
+
 // Load reads the stored subscription.
 func (sm *SubscriptionManager) Load() error {
 	sm.mu.Lock()
@@ -236,7 +240,6 @@ func (sm *SubscriptionManager) SetActive(id int) (*models.Server, error) {
 
 	server := sm.data.Servers[id]
 
-	// Saving in a goroutine would race the next call — write synchronously
 	data, err := json.MarshalIndent(sm.data, "", "  ")
 	if err != nil {
 		return nil, err
@@ -253,8 +256,6 @@ func (sm *SubscriptionManager) SetActive(id int) (*models.Server, error) {
 }
 
 // SetActiveByRawURI activates a server by its stable RawURI under a single lock.
-// Safer than SetActive(id) when a Refresh may have run between snapshot and
-// activation: indices move, RawURI does not.
 func (sm *SubscriptionManager) SetActiveByRawURI(uri string) (*models.Server, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -323,9 +324,59 @@ func (sm *SubscriptionManager) SelectNext() (*models.Server, error) {
 	return sm.SetActive(next)
 }
 
-func (sm *SubscriptionManager) downloadAndParse(url string) ([]models.Server, error) {
+func (sm *SubscriptionManager) downloadAndParse(rawURL string) ([]models.Server, error) {
+	body, err := downloadSubscription(rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if servers, parseErr := ParseSubscription(string(body)); parseErr == nil && !isUnsupportedPlaceholder(servers) {
+		return servers, nil
+	}
+	if servers, parseErr := ParseXraySubscription(string(body)); parseErr == nil && !isUnsupportedPlaceholder(servers) {
+		return servers, nil
+	}
+
+	hwidBytes, err := os.ReadFile(sm.hwidPath())
+	if err != nil {
+		return nil, fmt.Errorf("подписка требует совместимый клиент, а HWID не найден в %s: %w", sm.hwidPath(), err)
+	}
+	hwid := strings.TrimSpace(string(hwidBytes))
+	if hwid == "" {
+		return nil, fmt.Errorf("HWID пуст в %s", sm.hwidPath())
+	}
+
+	headers := map[string]string{
+		"User-Agent":     "Happ/3.26.1",
+		"x-hwid":         hwid,
+		"x-device-os":    "Linux",
+		"x-ver-os":       "KeeneticOS",
+		"x-device-model": "Netcraze Viva NC-1913",
+	}
+	body, err = downloadSubscription(rawURL, headers)
+	if err != nil {
+		return nil, err
+	}
+
+	if servers, parseErr := ParseXraySubscription(string(body)); parseErr == nil && !isUnsupportedPlaceholder(servers) {
+		return servers, nil
+	}
+	if servers, parseErr := ParseSubscription(string(body)); parseErr == nil && !isUnsupportedPlaceholder(servers) {
+		return servers, nil
+	}
+	return nil, fmt.Errorf("провайдер вернул неподдерживаемую или заглушечную подписку")
+}
+
+func downloadSubscription(rawURL string, headers map[string]string) ([]byte, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка создания запроса подписки: %w", err)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка загрузки подписки: %w", err)
 	}
@@ -334,11 +385,18 @@ func (sm *SubscriptionManager) downloadAndParse(url string) ([]models.Server, er
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("сервер вернул код %d", resp.StatusCode)
 	}
-
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка чтения ответа: %w", err)
 	}
+	return body, nil
+}
 
-	return ParseSubscription(string(body))
+func isUnsupportedPlaceholder(servers []models.Server) bool {
+	if len(servers) != 1 {
+		return false
+	}
+	s := servers[0]
+	name := strings.ToLower(strings.ReplaceAll(s.Name, "%20", " "))
+	return strings.Contains(name, "app not supported") || (s.Address == "0.0.0.0" && s.Port == 1)
 }
