@@ -34,11 +34,9 @@ func (sm *SubscriptionManager) hwidPath() string {
 	return filepath.Join(filepath.Dir(sm.dataDir), "hwid")
 }
 
-// Load reads the stored subscription.
 func (sm *SubscriptionManager) Load() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-
 	data, err := os.ReadFile(sm.filePath())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -46,85 +44,89 @@ func (sm *SubscriptionManager) Load() error {
 		}
 		return err
 	}
-
 	return json.Unmarshal(data, sm.data)
 }
 
-// Save writes the subscription to disk.
 func (sm *SubscriptionManager) Save() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-
 	if err := os.MkdirAll(sm.dataDir, 0700); err != nil {
 		return err
 	}
-
 	data, err := json.MarshalIndent(sm.data, "", "  ")
 	if err != nil {
 		return err
 	}
-
 	return os.WriteFile(sm.filePath(), data, 0600)
 }
 
-// UpdateURL sets a new subscription URL, then downloads and parses it.
-func (sm *SubscriptionManager) UpdateURL(url string) ([]models.Server, error) {
-	servers, err := sm.downloadAndParse(url)
+// UpdateURL accepts either a subscription URL or one standalone proxy URI.
+// A standalone URI is stored as a manual entry and has no refresh URL.
+func (sm *SubscriptionManager) UpdateURL(raw string) ([]models.Server, error) {
+	raw = strings.TrimSpace(raw)
+	var servers []models.Server
+	var err error
+	storedURL := raw
+
+	if strings.HasPrefix(raw, "vless://") || strings.HasPrefix(raw, "vmess://") || strings.HasPrefix(raw, "trojan://") || strings.HasPrefix(raw, "ss://") {
+		servers, err = ParseSubscription(raw)
+		storedURL = ""
+	} else {
+		servers, err = sm.downloadAndParse(raw)
+	}
 	if err != nil {
 		return nil, err
 	}
 
 	sm.mu.Lock()
-	sm.data.URL = url
+	sm.data.URL = storedURL
 	sm.applyRefreshLocked(servers)
 	sm.mu.Unlock()
-
 	return servers, sm.Save()
 }
 
-// Refresh reloads the servers from the current URL.
 func (sm *SubscriptionManager) Refresh() ([]models.Server, error) {
 	sm.mu.RLock()
 	url := sm.data.URL
 	sm.mu.RUnlock()
-
 	if url == "" {
 		return nil, fmt.Errorf("URL подписки не задан")
 	}
-
 	servers, err := sm.downloadAndParse(url)
 	if err != nil {
 		return nil, err
 	}
-
 	sm.mu.Lock()
 	sm.applyRefreshLocked(servers)
 	sm.mu.Unlock()
-
 	return servers, sm.Save()
 }
 
-// applyRefreshLocked swaps the server list, keeping the active server matched by
-// RawURI rather than index and carrying manual country overrides across. Call
-// with sm.mu held.
+// applyRefreshLocked keeps ordinary nodes by RawURI. Provider profiles are
+// matched by their display name first because their encoded raw configuration
+// changes whenever the provider rotates a member inside the same profile.
 func (sm *SubscriptionManager) applyRefreshLocked(servers []models.Server) {
-	var activeURI string
+	var activeURI, activeName, activeType string
 	if sm.data.ActiveID >= 0 && sm.data.ActiveID < len(sm.data.Servers) {
-		activeURI = sm.data.Servers[sm.data.ActiveID].RawURI
+		active := sm.data.Servers[sm.data.ActiveID]
+		activeURI = active.RawURI
+		activeName = active.Name
+		activeType = active.EntryType
 	}
 
 	carryOverrides(sm.data.Servers, servers)
-
 	sm.data.LastUpdated = time.Now()
 	sm.data.Servers = servers
 
 	newActive := 0
-	if activeURI != "" {
-		for i := range servers {
-			if servers[i].RawURI == activeURI {
-				newActive = i
-				break
-			}
+	for i := range servers {
+		if activeType == "profile" && servers[i].EntryType == "profile" && servers[i].Name == activeName {
+			newActive = i
+			break
+		}
+		if activeType != "profile" && activeURI != "" && servers[i].RawURI == activeURI {
+			newActive = i
+			break
 		}
 	}
 	sm.data.ActiveID = newActive
@@ -133,7 +135,6 @@ func (sm *SubscriptionManager) applyRefreshLocked(servers []models.Server) {
 	}
 }
 
-// carryOverrides moves manual CountryOverride values onto the new list by RawURI.
 func carryOverrides(old, fresh []models.Server) {
 	if len(old) == 0 {
 		return
@@ -151,8 +152,6 @@ func carryOverrides(old, fresh []models.Server) {
 	}
 }
 
-// GetData returns a copy of the subscription. Servers is deep-copied: otherwise
-// the caller would read the live slice unlocked, racing SetActive and friends.
 func (sm *SubscriptionManager) GetData() models.SubscriptionData {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -161,28 +160,22 @@ func (sm *SubscriptionManager) GetData() models.SubscriptionData {
 	return d
 }
 
-// GetServers returns the server list.
 func (sm *SubscriptionManager) GetServers() []models.Server {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-
 	result := make([]models.Server, len(sm.data.Servers))
 	copy(result, sm.data.Servers)
 	return result
 }
 
-// UpdateLatencies stores measured latencies back into the subscription by RawURI,
-// so the UI shows them at once and does not lose them on refresh.
 func (sm *SubscriptionManager) UpdateLatencies(checked []models.Server) {
 	sm.mu.Lock()
-
 	byURI := make(map[string]int, len(checked))
 	for _, c := range checked {
 		if c.RawURI != "" {
 			byURI[c.RawURI] = c.Latency
 		}
 	}
-
 	now := time.Now()
 	for i := range sm.data.Servers {
 		if lat, ok := byURI[sm.data.Servers[i].RawURI]; ok {
@@ -190,10 +183,8 @@ func (sm *SubscriptionManager) UpdateLatencies(checked []models.Server) {
 			sm.data.Servers[i].LastChecked = now
 		}
 	}
-
 	data, err := json.MarshalIndent(sm.data, "", "  ")
 	sm.mu.Unlock()
-
 	if err != nil {
 		return
 	}
@@ -202,18 +193,13 @@ func (sm *SubscriptionManager) UpdateLatencies(checked []models.Server) {
 	}
 }
 
-// SetCountryOverride sets a server's country by hand — needed in strict mode when
-// detection could not resolve it.
 func (sm *SubscriptionManager) SetCountryOverride(id int, country string) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-
 	if id < 0 || id >= len(sm.data.Servers) {
 		return fmt.Errorf("сервер с id %d не найден", id)
 	}
-
 	sm.data.Servers[id].CountryOverride = strings.ToUpper(strings.TrimSpace(country))
-
 	data, err := json.MarshalIndent(sm.data, "", "  ")
 	if err != nil {
 		return err
@@ -224,42 +210,33 @@ func (sm *SubscriptionManager) SetCountryOverride(id int, country string) error 
 	return os.WriteFile(sm.filePath(), data, 0600)
 }
 
-// SetActive makes the server with the given id active.
 func (sm *SubscriptionManager) SetActive(id int) (*models.Server, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-
 	if id < 0 || id >= len(sm.data.Servers) {
 		return nil, fmt.Errorf("сервер с id %d не найден", id)
 	}
-
 	sm.data.ActiveID = id
 	for i := range sm.data.Servers {
 		sm.data.Servers[i].Active = i == id
 	}
-
 	server := sm.data.Servers[id]
-
 	data, err := json.MarshalIndent(sm.data, "", "  ")
 	if err != nil {
 		return nil, err
 	}
-
 	if err := os.MkdirAll(sm.dataDir, 0700); err != nil {
 		return nil, err
 	}
 	if err := os.WriteFile(sm.filePath(), data, 0600); err != nil {
 		return nil, err
 	}
-
 	return &server, nil
 }
 
-// SetActiveByRawURI activates a server by its stable RawURI under a single lock.
 func (sm *SubscriptionManager) SetActiveByRawURI(uri string) (*models.Server, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-
 	idx := -1
 	for i := range sm.data.Servers {
 		if sm.data.Servers[i].RawURI == uri {
@@ -270,13 +247,11 @@ func (sm *SubscriptionManager) SetActiveByRawURI(uri string) (*models.Server, er
 	if idx < 0 {
 		return nil, fmt.Errorf("сервер не найден по RawURI")
 	}
-
 	sm.data.ActiveID = idx
 	for i := range sm.data.Servers {
 		sm.data.Servers[i].Active = i == idx
 	}
 	server := sm.data.Servers[idx]
-
 	data, err := json.MarshalIndent(sm.data, "", "  ")
 	if err != nil {
 		return nil, err
@@ -287,39 +262,31 @@ func (sm *SubscriptionManager) SetActiveByRawURI(uri string) (*models.Server, er
 	if err := os.WriteFile(sm.filePath(), data, 0600); err != nil {
 		return nil, err
 	}
-
 	return &server, nil
 }
 
-// GetActiveServer returns the active server.
 func (sm *SubscriptionManager) GetActiveServer() *models.Server {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-
 	if len(sm.data.Servers) == 0 {
 		return nil
 	}
-
 	id := sm.data.ActiveID
 	if id < 0 || id >= len(sm.data.Servers) {
 		return nil
 	}
-
 	s := sm.data.Servers[id]
 	return &s
 }
 
-// SelectNext switches to the next server in the list.
 func (sm *SubscriptionManager) SelectNext() (*models.Server, error) {
 	sm.mu.RLock()
 	count := len(sm.data.Servers)
 	current := sm.data.ActiveID
 	sm.mu.RUnlock()
-
 	if count == 0 {
 		return nil, fmt.Errorf("нет доступных серверов")
 	}
-
 	next := (current + 1) % count
 	return sm.SetActive(next)
 }
@@ -329,7 +296,6 @@ func (sm *SubscriptionManager) downloadAndParse(rawURL string) ([]models.Server,
 	if err != nil {
 		return nil, err
 	}
-
 	if servers, parseErr := ParseSubscription(string(body)); parseErr == nil && !isUnsupportedPlaceholder(servers) {
 		return servers, nil
 	}
@@ -345,7 +311,6 @@ func (sm *SubscriptionManager) downloadAndParse(rawURL string) ([]models.Server,
 	if hwid == "" {
 		return nil, fmt.Errorf("HWID пуст в %s", sm.hwidPath())
 	}
-
 	headers := map[string]string{
 		"User-Agent":     "Happ/3.26.1",
 		"x-hwid":         hwid,
@@ -357,7 +322,6 @@ func (sm *SubscriptionManager) downloadAndParse(rawURL string) ([]models.Server,
 	if err != nil {
 		return nil, err
 	}
-
 	if servers, parseErr := ParseXraySubscription(string(body)); parseErr == nil && !isUnsupportedPlaceholder(servers) {
 		return servers, nil
 	}
@@ -381,7 +345,6 @@ func downloadSubscription(rawURL string, headers map[string]string) ([]byte, err
 		return nil, fmt.Errorf("ошибка загрузки подписки: %w", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("сервер вернул код %d", resp.StatusCode)
 	}
