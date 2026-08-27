@@ -101,23 +101,24 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 // VLESSParams holds every parameter of a VLESS URI. Exported because the Mihomo
 // config generator builds its proxies from the same fields.
 type VLESSParams struct {
-	UUID        string
-	Address     string
-	Port        int
-	Security    string // reality, tls, none
-	Network     string // tcp, xhttp, ws, grpc, h2
-	SNI         string
-	Fingerprint string
-	PublicKey   string
-	ShortID     string
-	SpiderX     string
-	Host        string
-	Path        string
-	Mode        string // packet-up, etc.
-	Flow        string // xtls-rprx-vision
-	ALPN        string
-	Encryption  string
-	Extra       string // JSON from the extra parameter (xhttp: downloadSettings, xmux, …)
+	UUID           string
+	Address        string
+	Port           int
+	Security       string // reality, tls, none
+	Network        string // tcp, xhttp, ws, grpc, h2
+	SNI            string
+	Fingerprint    string
+	PublicKey      string
+	ShortID        string
+	SpiderX        string
+	Host           string
+	Path           string
+	Mode           string // packet-up, etc.
+	Flow           string // xtls-rprx-vision
+	ALPN           string
+	Encryption     string
+	PacketEncoding string // xudp, packetaddr
+	Extra          string // JSON from the extra parameter (xhttp: downloadSettings, xmux, …)
 }
 
 // ParseVLESS parses a VLESS URI in full.
@@ -137,24 +138,29 @@ func ParseVLESS(uri string) (*VLESSParams, error) {
 	}
 
 	q := u.Query()
+	packetEncoding := q.Get("packetEncoding")
+	if packetEncoding == "" {
+		packetEncoding = q.Get("packet-encoding")
+	}
 	return &VLESSParams{
-		UUID:        u.User.Username(),
-		Address:     u.Hostname(),
-		Port:        port,
-		Security:    q.Get("security"),
-		Network:     q.Get("type"),
-		SNI:         q.Get("sni"),
-		Fingerprint: q.Get("fp"),
-		PublicKey:   q.Get("pbk"),
-		ShortID:     q.Get("sid"),
-		SpiderX:     q.Get("spx"),
-		Host:        q.Get("host"),
-		Path:        q.Get("path"),
-		Mode:        q.Get("mode"),
-		Flow:        q.Get("flow"),
-		ALPN:        q.Get("alpn"),
-		Encryption:  q.Get("encryption"),
-		Extra:       q.Get("extra"),
+		UUID:           u.User.Username(),
+		Address:        u.Hostname(),
+		Port:           port,
+		Security:       q.Get("security"),
+		Network:        q.Get("type"),
+		SNI:            q.Get("sni"),
+		Fingerprint:    q.Get("fp"),
+		PublicKey:      q.Get("pbk"),
+		ShortID:        q.Get("sid"),
+		SpiderX:        q.Get("spx"),
+		Host:           q.Get("host"),
+		Path:           q.Get("path"),
+		Mode:           q.Get("mode"),
+		Flow:           q.Get("flow"),
+		ALPN:           q.Get("alpn"),
+		Encryption:     q.Get("encryption"),
+		PacketEncoding: packetEncoding,
+		Extra:          q.Get("extra"),
 	}, nil
 }
 
@@ -163,6 +169,9 @@ func ParseVLESS(uri string) (*VLESSParams, error) {
 // whichever credential shape that config already uses.
 func buildOutboundFromURI(p *VLESSParams, tag string, format outboundFormat) map[string]interface{} {
 	settings := buildVLESSSettings(p, format)
+	if p.PacketEncoding != "" && p.PacketEncoding != "none" {
+		settings["packetEncoding"] = p.PacketEncoding
+	}
 
 	// StreamSettings
 	streamSettings := map[string]interface{}{}
