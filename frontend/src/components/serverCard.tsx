@@ -67,13 +67,13 @@ export function ServerCard({
         >
             <CardContent className='flex items-start justify-between gap-3 py-3'>
                 <div className='min-w-0 flex-1'>
-                    <div className='flex items-center gap-2 mb-1.5'>
-                        {flag && <span className='shrink-0'>{flag}</span>}
-                        <span className='text-sm font-medium truncate'>
+                    <div className='flex items-start gap-2 mb-1.5'>
+                        {flag && <span className='shrink-0 pt-0.5'>{flag}</span>}
+                        <span className='text-sm font-medium whitespace-normal break-words leading-snug'>
                             {server.name}
                         </span>
                         {server.active && (
-                            <span className='shrink-0 w-2 h-2 rounded-full bg-emerald-500' />
+                            <span className='shrink-0 w-2 h-2 mt-1.5 rounded-full bg-emerald-500' />
                         )}
                     </div>
 
@@ -163,6 +163,7 @@ export function ServerCard({
                     <Button
                         size='sm'
                         variant='outline'
+                        className='shrink-0'
                         onClick={() => onSelect(server.id)}
                         disabled={loading}
                     >
