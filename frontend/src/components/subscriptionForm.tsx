@@ -41,7 +41,7 @@ export function SubscriptionForm({
     return (
         <Card>
             <CardHeader className='pb-3'>
-                <CardTitle className='text-base'>Подписка</CardTitle>
+                <CardTitle className='text-base'>Подписка / сервер</CardTitle>
             </CardHeader>
             <CardContent className='space-y-4'>
                 {subscription?.url && (
@@ -65,15 +65,11 @@ export function SubscriptionForm({
                             </p>
                         )}
                         <div className='flex justify-between'>
-                            <span className='text-muted-foreground'>
-                                Обновлено:
-                            </span>
+                            <span className='text-muted-foreground'>Обновлено:</span>
                             <span>{formatDate(subscription.last_updated)}</span>
                         </div>
                         <div className='flex justify-between'>
-                            <span className='text-muted-foreground'>
-                                Серверов:
-                            </span>
+                            <span className='text-muted-foreground'>Элементов:</span>
                             <span>{subscription.server_count}</span>
                         </div>
                     </div>
@@ -81,10 +77,11 @@ export function SubscriptionForm({
 
                 <form onSubmit={handleSubmit} className='space-y-3'>
                     <Input
-                        type='url'
+                        type='text'
                         value={url}
                         onChange={e => setUrl(e.target.value)}
-                        placeholder='https://provider.com/sub/...'
+                        placeholder='https://… или vless://…'
+                        autoComplete='off'
                     />
                     <div className='flex gap-2'>
                         <Button
@@ -102,9 +99,7 @@ export function SubscriptionForm({
                                 onClick={onRefresh}
                                 disabled={loading}
                             >
-                                <IconRefresh
-                                    className={loading ? 'animate-spin' : ''}
-                                />
+                                <IconRefresh className={loading ? 'animate-spin' : ''} />
                             </Button>
                         )}
                     </div>
