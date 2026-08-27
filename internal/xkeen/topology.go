@@ -26,8 +26,8 @@ const (
 
 // ReadTopology inspects the core config directory. Provider subscription
 // profiles may contain their own balancer, but they are still one selectable
-// entry from the panel's point of view. The marker in 04_outbounds.json keeps
-// such a profile out of the panel-managed pool code path.
+// entry from the panel's point of view. Their panel-only marker is kept beside
+// the Xray config, never inside it.
 func ReadTopology(rt Runtime) Topology {
 	top := Topology{Mode: TopologySingle}
 
@@ -36,15 +36,14 @@ func ReadTopology(rt Runtime) Topology {
 		return top
 	}
 
+	markers, _ := filepath.Glob(filepath.Join(rt.XrayConfDir, "*"+providerProfileMarkerSuffix))
+	providerProfile := len(markers) > 0
+
 	var balancers []interface{}
-	providerProfile := false
 	for _, file := range files {
 		var cfg map[string]interface{}
 		if err := ReadJSONC(file, &cfg); err != nil {
 			continue
-		}
-		if marked, _ := cfg[providerProfileMarker].(bool); marked {
-			providerProfile = true
 		}
 
 		for _, raw := range asSlice(cfg["outbounds"]) {
@@ -102,7 +101,7 @@ func matchSelectors(tags, selectors []string) []string {
 				matched = append(matched, tag)
 				break
 			}
-		}
+	}
 	}
 	return matched
 }
