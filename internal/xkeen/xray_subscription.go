@@ -1,6 +1,7 @@
 package xkeen
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -10,10 +11,15 @@ import (
 	"xkeen-panel/internal/models"
 )
 
+const xrayProfileScheme = "xray-profile://"
+
 // ParseXraySubscription imports Xray JSON subscriptions that contain either a
-// single config object or an array of config objects. Some providers (including
-// HAPP-oriented subscriptions) return several ready-made profiles, each with one
-// or more VLESS outbounds.
+// single config object or an array of config objects.
+//
+// A config that contains routing.balancers is a provider profile and must stay
+// intact: its several VLESS outbounds are one selectable unit. Configs without
+// a balancer remain ordinary subscriptions and every VLESS outbound is exposed
+// separately. No assumptions are made about the number of profiles or members.
 func ParseXraySubscription(content string) ([]models.Server, error) {
 	var raw interface{}
 	if err := json.Unmarshal([]byte(content), &raw); err != nil {
@@ -52,6 +58,24 @@ func ParseXraySubscription(content string) ([]models.Server, error) {
 				vlessOutbounds = append(vlessOutbounds, outbound)
 			}
 		}
+		if len(vlessOutbounds) == 0 {
+			continue
+		}
+
+		if configHasBalancer(cfg) {
+			profile, err := xrayConfigToProfile(cfg, remarks, vlessOutbounds)
+			if err != nil {
+				continue
+			}
+			if seen[profile.RawURI] {
+				continue
+			}
+			seen[profile.RawURI] = true
+			profile.ID = len(servers)
+			profile.Country = detectCountry(profile.Name)
+			servers = append(servers, *profile)
+			continue
+		}
 
 		for i, outbound := range vlessOutbounds {
 			name := remarks
@@ -71,6 +95,8 @@ func ParseXraySubscription(content string) ([]models.Server, error) {
 			}
 			seen[server.RawURI] = true
 			server.ID = len(servers)
+			server.EntryType = "server"
+			server.MemberCount = 1
 			server.Country = detectCountry(server.Name)
 			servers = append(servers, *server)
 		}
@@ -80,6 +106,63 @@ func ParseXraySubscription(content string) ([]models.Server, error) {
 		return nil, fmt.Errorf("в Xray JSON не найдено ни одного поддерживаемого VLESS outbound")
 	}
 	return servers, nil
+}
+
+func configHasBalancer(cfg map[string]interface{}) bool {
+	routing, _ := cfg["routing"].(map[string]interface{})
+	if routing == nil {
+		return false
+	}
+	return len(asSlice(routing["balancers"])) > 0
+}
+
+func xrayConfigToProfile(cfg map[string]interface{}, remarks string, vless []map[string]interface{}) (*models.Server, error) {
+	if len(vless) == 0 {
+		return nil, fmt.Errorf("профиль без VLESS outbound")
+	}
+	address, port, _, ok := readProxyEndpoint(vless[0])
+	if !ok || address == "" {
+		return nil, fmt.Errorf("в профиле нет пригодного VLESS endpoint")
+	}
+	if port == 0 {
+		port = 443
+	}
+	if remarks == "" {
+		remarks = "Xray профиль"
+	}
+
+	payload, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("не удалось сохранить Xray профиль: %w", err)
+	}
+
+	return &models.Server{
+		Name:        remarks,
+		Address:     address,
+		Port:        port,
+		Protocol:    "vless",
+		Latency:     -1,
+		RawURI:      xrayProfileScheme + base64.RawURLEncoding.EncodeToString(payload),
+		EntryType:   "profile",
+		MemberCount: len(vless),
+		Balanced:    true,
+	}, nil
+}
+
+func decodeXrayProfile(raw string) (map[string]interface{}, error) {
+	if !strings.HasPrefix(raw, xrayProfileScheme) {
+		return nil, fmt.Errorf("не Xray профиль")
+	}
+	encoded := strings.TrimPrefix(raw, xrayProfileScheme)
+	payload, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка декодирования Xray профиля: %w", err)
+	}
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(payload, &cfg); err != nil {
+		return nil, fmt.Errorf("ошибка чтения Xray профиля: %w", err)
+	}
+	return cfg, nil
 }
 
 func xrayOutboundToServer(outbound map[string]interface{}, name string) (*models.Server, error) {
@@ -212,12 +295,14 @@ func xrayOutboundToServer(outbound map[string]interface{}, name string) (*models
 		Fragment: name,
 	}
 	return &models.Server{
-		Name:     name,
-		Address:  address,
-		Port:     port,
-		Protocol: "vless",
-		Latency:  -1,
-		RawURI:   u.String(),
+		Name:        name,
+		Address:     address,
+		Port:        port,
+		Protocol:    "vless",
+		Latency:     -1,
+		RawURI:      u.String(),
+		EntryType:   "server",
+		MemberCount: 1,
 	}, nil
 }
 
