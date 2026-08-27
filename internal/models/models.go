@@ -76,7 +76,10 @@ type User struct {
 	Credentials []webauthn.Credential `json:"credentials,omitempty"`
 }
 
-// Server is one entry of the subscription.
+// Server is one selectable entry. Most entries are individual proxy nodes.
+// Xray-profile subscriptions may instead expose a whole provider profile as one
+// selectable entry; in that case RawURI uses the private xray-profile:// format
+// and MemberCount/Balanced describe the group for the UI.
 type Server struct {
 	ID              int       `json:"id"`
 	Name            string    `json:"name"`
@@ -89,6 +92,9 @@ type Server struct {
 	LastChecked     time.Time `json:"last_checked,omitempty"`
 	Country         string    `json:"country,omitempty"`
 	CountryOverride string    `json:"country_override,omitempty"`
+	EntryType       string    `json:"entry_type,omitempty"` // server | profile
+	MemberCount     int       `json:"member_count,omitempty"`
+	Balanced        bool      `json:"balanced,omitempty"`
 }
 
 // SubscriptionData is the stored subscription (data/subscription.json).
