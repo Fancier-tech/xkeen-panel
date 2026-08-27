@@ -16,6 +16,10 @@ import (
 // Validation runs the core's own parser (`xray -test` / `mihomo -t`), so a
 // failure means the config really is broken — the previous one is restored.
 func ApplyServer(rt Runtime, outboundsPath string, server *models.Server) error {
+	if err := ensureOutboundsContainer(outboundsPath); err != nil {
+		return err
+	}
+
 	if err := UpdateOutbound(outboundsPath, server); err != nil {
 		return err
 	}
@@ -37,6 +41,27 @@ func ApplyServer(rt Runtime, outboundsPath string, server *models.Server) error 
 	log.Printf("[APPLY] Конфиг не прошёл проверку — выполнен откат")
 
 	return fmt.Errorf("конфигурация %s не прошла проверку, изменения отменены: %s", rt.Core, TailLines(output, 4))
+}
+
+// ensureOutboundsContainer initializes a fresh XKeen 04_outbounds.json.
+// Some installations ship this file as just `{}`. UpdateOutbound deliberately
+// treats a malformed/missing outbounds field as an error, so normalize only the
+// valid empty-object case here before applying the first subscription server.
+func ensureOutboundsContainer(path string) error {
+	config, err := ReadOutboundsConfig(path)
+	if err != nil {
+		return err
+	}
+
+	if _, exists := config["outbounds"]; exists {
+		return nil
+	}
+	if len(config) != 0 {
+		return fmt.Errorf("outbounds не найдены в непустом конфиге")
+	}
+
+	config["outbounds"] = []interface{}{}
+	return WriteOutboundsConfig(path, config)
 }
 
 // TailLines trims validator output to something a UI can show. The tail is what
