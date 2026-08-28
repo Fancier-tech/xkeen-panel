@@ -154,6 +154,7 @@ func toInt(v interface{}) int {
 // warns), so blindly replacing the outbound can leave XKeen unable to start.
 func mergeOutbound(existing, generated map[string]interface{}) map[string]interface{} {
 	if existing == nil {
+		normalizeXHTTPOutbound(generated)
 		return generated
 	}
 
@@ -172,6 +173,7 @@ func mergeOutbound(existing, generated map[string]interface{}) map[string]interf
 		mapOf(generated["streamSettings"]),
 	)
 
+	normalizeXHTTPOutbound(merged)
 	return merged
 }
 
