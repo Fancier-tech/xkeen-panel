@@ -9,6 +9,9 @@ export type Server = {
     country?: string
     country_override?: string
     last_checked?: string
+    entry_type?: 'server' | 'profile'
+    member_count?: number
+    balanced?: boolean
 }
 
 export type Status = {

@@ -24,9 +24,10 @@ const (
 	TopologyPool   = "pool"
 )
 
-// ReadTopology inspects the core config directory. A missing or unreadable
-// directory yields a single-node topology rather than an error: the panel still
-// has to render, and writes are guarded separately.
+// ReadTopology inspects the core config directory. Provider subscription
+// profiles may contain their own balancer, but they are still one selectable
+// entry from the panel's point of view. Their panel-only marker is kept beside
+// the Xray config, never inside it.
 func ReadTopology(rt Runtime) Topology {
 	top := Topology{Mode: TopologySingle}
 
@@ -34,6 +35,9 @@ func ReadTopology(rt Runtime) Topology {
 	if err != nil || len(files) == 0 {
 		return top
 	}
+
+	markers, _ := filepath.Glob(filepath.Join(rt.XrayConfDir, "*"+providerProfileMarkerSuffix))
+	providerProfile := len(markers) > 0
 
 	var balancers []interface{}
 	for _, file := range files {
@@ -55,6 +59,10 @@ func ReadTopology(rt Runtime) Topology {
 		if routing, ok := cfg["routing"].(map[string]interface{}); ok {
 			balancers = append(balancers, asSlice(routing["balancers"])...)
 		}
+	}
+
+	if providerProfile {
+		return top
 	}
 
 	// The first balancer with a usable selector wins — XKeen's own speed
@@ -93,7 +101,7 @@ func matchSelectors(tags, selectors []string) []string {
 				matched = append(matched, tag)
 				break
 			}
-		}
+	}
 	}
 	return matched
 }

@@ -85,6 +85,58 @@ func TestParseXraySubscriptionArray(t *testing.T) {
 	}
 }
 
+func TestParseXraySubscriptionKeepsBalancerProfileTogether(t *testing.T) {
+	content := `[
+  {
+    "remarks": "Свободный интернет #3 (безлимит)",
+    "outbounds": [
+      {"tag":"proxy","protocol":"vless","settings":{"address":"one.example","port":443,"id":"11111111-1111-1111-1111-111111111111"},"streamSettings":{"network":"tcp"}},
+      {"tag":"proxy-2","protocol":"vless","settings":{"address":"two.example","port":443,"id":"22222222-2222-2222-2222-222222222222"},"streamSettings":{"network":"tcp"}},
+      {"tag":"proxy-3","protocol":"vless","settings":{"address":"three.example","port":443,"id":"33333333-3333-3333-3333-333333333333"},"streamSettings":{"network":"tcp"}}
+    ],
+    "routing": {
+      "balancers": [{
+        "tag": "LB",
+        "selector": ["proxy"],
+        "strategy": {"type":"leastLoad"},
+        "fallbackTag": "proxy"
+      }],
+      "rules": [{"type":"field","network":"tcp,udp","balancerTag":"LB"}]
+    },
+    "burstObservatory": {"subjectSelector":["proxy"]}
+  }
+]`
+
+	servers, err := ParseXraySubscription(content)
+	if err != nil {
+		t.Fatalf("ParseXraySubscription: %v", err)
+	}
+	if len(servers) != 1 {
+		t.Fatalf("got %d entries, want one profile", len(servers))
+	}
+	p := servers[0]
+	if p.EntryType != "profile" || !p.Balanced || p.MemberCount != 3 {
+		t.Fatalf("profile metadata lost: %+v", p)
+	}
+	if p.Name != "Свободный интернет #3 (безлимит)" {
+		t.Fatalf("profile name = %q", p.Name)
+	}
+	if !strings.HasPrefix(p.RawURI, xrayProfileScheme) {
+		t.Fatalf("profile payload not preserved")
+	}
+	decoded, err := decodeXrayProfile(p.RawURI)
+	if err != nil {
+		t.Fatalf("decodeXrayProfile: %v", err)
+	}
+	routing := decoded["routing"].(map[string]interface{})
+	if len(asSlice(routing["balancers"])) != 1 {
+		t.Fatal("balancer was not preserved")
+	}
+	if _, ok := decoded["burstObservatory"]; !ok {
+		t.Fatal("burstObservatory was not preserved")
+	}
+}
+
 func TestXraySubscriptionDeduplicates(t *testing.T) {
 	config := `{"remarks":"One","outbounds":[{"protocol":"vless","settings":{"address":"a.example","port":443,"id":"11111111-1111-1111-1111-111111111111"},"streamSettings":{"network":"tcp"}}]}`
 	content := "[" + config + "," + config + "]"

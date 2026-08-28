@@ -46,6 +46,7 @@ export function ServerCard({
     )
 
     const country = server.country_override || server.country
+    const isProfile = server.entry_type === 'profile'
     // Subscription names often already start with a flag emoji — do not add a second one.
     const nameHasFlag = /\p{Regional_Indicator}\p{Regional_Indicator}/u.test(
         server.name,
@@ -67,13 +68,13 @@ export function ServerCard({
         >
             <CardContent className='flex items-start justify-between gap-3 py-3'>
                 <div className='min-w-0 flex-1'>
-                    <div className='flex items-center gap-2 mb-1.5'>
-                        {flag && <span className='shrink-0'>{flag}</span>}
-                        <span className='text-sm font-medium truncate'>
+                    <div className='flex items-start gap-2 mb-1.5'>
+                        {flag && <span className='shrink-0 pt-0.5'>{flag}</span>}
+                        <span className='text-sm font-medium whitespace-normal break-words leading-snug'>
                             {server.name}
                         </span>
                         {server.active && (
-                            <span className='shrink-0 w-2 h-2 rounded-full bg-emerald-500' />
+                            <span className='shrink-0 w-2 h-2 mt-1.5 rounded-full bg-emerald-500' />
                         )}
                     </div>
 
@@ -89,9 +90,20 @@ export function ServerCard({
                                 ? 'SS'
                                 : server.protocol}
                         </Badge>
-                        <span className='text-muted-foreground'>
-                            {maskAddress(server.address)}:{server.port}
-                        </span>
+                        {isProfile && (
+                            <Badge
+                                variant='outline'
+                                className='text-[10px] border-sky-500/25 bg-sky-500/10 text-sky-400'
+                            >
+                                Балансировка · {server.member_count ?? 0}{' '}
+                                серверов
+                            </Badge>
+                        )}
+                        {!isProfile && (
+                            <span className='text-muted-foreground'>
+                                {maskAddress(server.address)}:{server.port}
+                            </span>
+                        )}
                         {server.latency_ms > 0 && (
                             <span
                                 className={cn(
@@ -109,7 +121,8 @@ export function ServerCard({
                         {server.latency_ms === -1 && (
                             <span className='text-muted-foreground'>—</span>
                         )}
-                        {onSetCountry &&
+                        {!isProfile &&
+                            onSetCountry &&
                             (editing ? (
                                 <span className='flex items-center gap-1'>
                                     <Input
@@ -163,6 +176,7 @@ export function ServerCard({
                     <Button
                         size='sm'
                         variant='outline'
+                        className='shrink-0'
                         onClick={() => onSelect(server.id)}
                         disabled={loading}
                     >
