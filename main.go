@@ -26,25 +26,21 @@ func main() {
 	configPath := flag.String("config", "config.yaml", "путь к конфигурационному файлу")
 	flag.Parse()
 
-	// Load the configuration
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
 		log.Fatalf("Ошибка загрузки конфига: %v", err)
 	}
 
-	// User manager
 	userManager := auth.NewUserManager(cfg.DataDir)
 	if err := userManager.Load(); err != nil {
 		log.Fatalf("Ошибка загрузки пользователя: %v", err)
 	}
 
-	// Subscription manager
 	subManager := xkeen.NewSubscriptionManager(cfg.DataDir)
 	if err := subManager.Load(); err != nil {
 		log.Printf("Предупреждение: ошибка загрузки подписки: %v", err)
 	}
 
-	// Detect the XKeen layout: generation (S05xkeen/S24xray), core, mode, version
 	detector := xkeen.NewDetector("", cfg.XKeenPath, cfg.InitScript,
 		cfg.XrayConfigDir, cfg.RoutingFile, cfg.MihomoConfig, cfg.XkeenJSON)
 	rt := detector.Runtime()
@@ -54,15 +50,11 @@ func main() {
 		log.Printf("XKeen %s (поколение %d), ядро %s, режим %s", rt.Version, rt.Generation, rt.Core, rt.Mode)
 	}
 
-	// Pool state: the tag the routing rules were written against is what makes a
-	// correct return to a single outbound possible
 	poolStore := xkeen.NewPoolStore(cfg.DataDir)
 	if err := poolStore.Load(); err != nil {
 		log.Printf("Предупреждение: не удалось загрузить состояние пула: %v", err)
 	}
 
-	// An install from before the api block was fixed cannot pin a pool node until
-	// the file is migrated, and a pool in sync never reaches the refresh path
 	if migrated, err := xkeen.EnsureAPIConfig(poolStore.Get(), cfg.XrayAPIAddr); err != nil {
 		log.Printf("Не удалось обновить api-блок Xray: %v", err)
 	} else if migrated {
@@ -70,17 +62,12 @@ func main() {
 		xkeen.Restart(rt.Dispatcher)
 	}
 
-	// Watchdog and SSE
 	watchdog := monitor.NewWatchdog(cfg, subManager, detector)
 	eventBus := sse.NewEventBus()
 	watchdog.SetEventBus(eventBus)
 	watchdog.SetPoolStore(poolStore)
-
-	// Package xkeen logs to stdout by default, which the init script discards —
-	// send its pool and restart events to the panel log instead
 	xkeen.Log = watchdog.Log
 
-	// GeoIP reuses the geoip.dat already installed for Xray
 	var geoMatcher *geoip.Matcher
 	if geoPath := geoip.FindDat(cfg.GeoIPPath); geoPath == "" {
 		log.Printf("GeoIP: geoip.dat не найден (%s) — гео-фильтр по IP отключён, используется определение по имени", cfg.GeoIPPath)
@@ -92,13 +79,11 @@ func main() {
 		log.Printf("GeoIP: загружен %s (избегаемые страны: %v)", geoPath, cfg.AutoSwitchAvoidCountries)
 	}
 
-	// Autostart the watchdog for unattended operation
 	if cfg.WatchdogAutoStart && len(subManager.GetServers()) > 0 {
 		watchdog.SetActive(true)
 		log.Printf("Watchdog включён автоматически (watchdog_auto_start)")
 	}
 
-	// Publish restart events over SSE
 	xkeen.OnRestartStateChange = func(restarting bool) {
 		eventBus.Publish(sse.Event{
 			Type: "restart",
@@ -110,19 +95,15 @@ func main() {
 		})
 	}
 
-	// Context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Run the watchdog
 	go watchdog.Start(ctx)
 
-	// Periodic subscription refresh
 	if cfg.SubscriptionRefreshInterval > 0 {
 		go runSubscriptionRefresh(ctx, cfg, subManager, watchdog, detector, poolStore, geoMatcher, eventBus)
 	}
 
-	// Frontend assets
 	var frontendFS fs.FS
 	distFS, err := fs.Sub(frontendDist, "frontend/dist")
 	if err != nil {
@@ -131,14 +112,12 @@ func main() {
 		frontendFS = distFS
 	}
 
-	// HTTP server
 	srv := server.New(cfg, userManager, subManager, watchdog, detector, poolStore, geoMatcher, eventBus, frontendFS)
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.Port),
 		Handler: srv.Handler(),
 	}
 
-	// Graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
@@ -163,88 +142,89 @@ func main() {
 	log.Println("Сервер остановлен")
 }
 
-// runSubscriptionRefresh refreshes the subscription on a timer. The core is
-// restarted only when the active server was actually replaced (it vanished from
-// the subscription) — a refresh must not drop a working connection.
+// runSubscriptionRefresh refreshes once immediately after panel startup and
+// then waits the configured interval between refreshes. A reboot therefore does
+// not postpone the first subscription update by the full interval.
 func runSubscriptionRefresh(ctx context.Context, cfg *models.Config, sm *xkeen.SubscriptionManager, wd *monitor.Watchdog, det *xkeen.Detector, pool *xkeen.PoolStore, matcher *geoip.Matcher, bus *sse.EventBus) {
 	interval := time.Duration(cfg.SubscriptionRefreshInterval) * time.Second
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			prevURI := ""
-			if a := sm.GetActiveServer(); a != nil {
-				prevURI = a.RawURI
+		case <-timer.C:
+			if !refreshSubscriptionOnce(ctx, cfg, sm, wd, det, pool, matcher, bus) {
+				return
 			}
-
-			var err error
-			for attempt := 0; attempt < 2; attempt++ {
-				if _, err = sm.Refresh(); err == nil {
-					break
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(30 * time.Second):
-				}
-			}
-			if err != nil {
-				wd.Log("[AUTO-UPDATE] Подписка не обновилась: %v", err)
-				continue
-			}
-
-			active := sm.GetActiveServer()
-			newURI := ""
-			if active != nil {
-				newURI = active.RawURI
-			}
-
-			rt := det.Runtime()
-
-			// A pool is generated from subscription URIs, so a rotated server
-			// leaves it pointing at an endpoint that no longer answers. Sync on
-			// every refresh, not only when the active server changed.
-			if top := det.Topology(); top.Mode == xkeen.TopologyPool {
-				state := pool.Get()
-				state.BalancerTag = top.BalancerTag
-				if len(top.Selectors) > 0 {
-					state.Selector = top.Selectors[0]
-				}
-
-				res, err := xkeen.RefreshPool(rt, cfg.OutboundsFile, cfg.XrayAPIAddr, sm.GetServers(), state,
-					xkeen.PoolSelectionFromConfig(cfg, matcher))
-				switch {
-				case err != nil:
-					wd.Log("[AUTO-UPDATE] Пул не синхронизирован: %v", err)
-				case res.Changed:
-					det.InvalidateTopology()
-					wd.Log("[AUTO-UPDATE] Пул обновлён: +%d, -%d, заменено %d%s", len(res.Added), len(res.Removed), len(res.Replaced), liveSuffix(res))
-				}
-			} else if active != nil && newURI != prevURI {
-				// Single-outbound mode: the active server left the subscription.
-				// Do not blindly restart onto servers[0] — it may sit in an
-				// avoided country; let the watchdog's geo filter choose.
-				if target := wd.AllowedActiveOrBest(); target != nil {
-					if err := xkeen.ApplyServer(rt, cfg.OutboundsFile, target); err != nil {
-						log.Printf("[AUTO-UPDATE] Ошибка конфига: %v", err)
-					} else {
-						xkeen.Restart(rt.Dispatcher)
-						log.Printf("[AUTO-UPDATE] Активный сервер заменён на %s, ядро перезапущено", target.Name)
-					}
-				}
-			}
-
-			bus.Publish(sse.Event{Type: "subscription", Data: map[string]bool{"updated": true}})
-			wd.Log("[AUTO-UPDATE] Подписка обновлена (%d серверов)", len(sm.GetServers()))
+			timer.Reset(interval)
 		}
 	}
 }
 
-// liveSuffix says whether the pool update avoided a restart.
+func refreshSubscriptionOnce(ctx context.Context, cfg *models.Config, sm *xkeen.SubscriptionManager, wd *monitor.Watchdog, det *xkeen.Detector, pool *xkeen.PoolStore, matcher *geoip.Matcher, bus *sse.EventBus) bool {
+	prevURI := ""
+	if a := sm.GetActiveServer(); a != nil {
+		prevURI = a.RawURI
+	}
+
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err = sm.Refresh(); err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(30 * time.Second):
+		}
+	}
+	if err != nil {
+		wd.Log("[AUTO-UPDATE] Подписка не обновилась: %v", err)
+		return true
+	}
+
+	active := sm.GetActiveServer()
+	newURI := ""
+	if active != nil {
+		newURI = active.RawURI
+	}
+
+	rt := det.Runtime()
+
+	if top := det.Topology(); top.Mode == xkeen.TopologyPool {
+		state := pool.Get()
+		state.BalancerTag = top.BalancerTag
+		if len(top.Selectors) > 0 {
+			state.Selector = top.Selectors[0]
+		}
+
+		res, err := xkeen.RefreshPool(rt, cfg.OutboundsFile, cfg.XrayAPIAddr, sm.GetServers(), state,
+			xkeen.PoolSelectionFromConfig(cfg, matcher))
+		switch {
+		case err != nil:
+			wd.Log("[AUTO-UPDATE] Пул не синхронизирован: %v", err)
+		case res.Changed:
+			det.InvalidateTopology()
+			wd.Log("[AUTO-UPDATE] Пул обновлён: +%d, -%d, заменено %d%s", len(res.Added), len(res.Removed), len(res.Replaced), liveSuffix(res))
+		}
+	} else if active != nil && newURI != prevURI {
+		if target := wd.AllowedActiveOrBest(); target != nil {
+			if err := xkeen.ApplyServer(rt, cfg.OutboundsFile, target); err != nil {
+				log.Printf("[AUTO-UPDATE] Ошибка конфига: %v", err)
+			} else {
+				xkeen.Restart(rt.Dispatcher)
+				log.Printf("[AUTO-UPDATE] Активный сервер заменён на %s, ядро перезапущено", target.Name)
+			}
+		}
+	}
+
+	bus.Publish(sse.Event{Type: "subscription", Data: map[string]bool{"updated": true}})
+	wd.Log("[AUTO-UPDATE] Подписка обновлена (%d серверов)", len(sm.GetServers()))
+	return true
+}
+
 func liveSuffix(res xkeen.SyncResult) string {
 	if res.Live {
 		return " (без перезапуска)"
